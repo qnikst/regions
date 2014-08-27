@@ -12,6 +12,8 @@
 --
 --------------------------------------------------------------------------------
 
+{-# Language KindSignatures #-}
+{-# Language FlexibleContexts #-}
 module Control.Monad.Trans.Region
     ( -- * Regions
       RegionT
@@ -38,7 +40,7 @@ module Control.Monad.Trans.Region
     , liftCallCC
     , mapRegionT
     , liftCatch
+      -- * Region values
     ) where
 
 import Control.Monad.Trans.Region.Internal
-

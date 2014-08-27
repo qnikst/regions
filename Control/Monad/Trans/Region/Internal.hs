@@ -37,6 +37,7 @@ module Control.Monad.Trans.Region.Internal
     , Finalizer
     , FinalizerHandle
     , onExit
+    , RefCountedFinalizer(..)
 
       -- * Running regions
     , runRegionT
@@ -356,7 +357,6 @@ doesn't point to any allocated memory so doesn't need to be freed.
 data RootRegion a
 
 instance InternalAncestorRegion RootRegion (RegionT s m)
-
 
 --------------------------------------------------------------------------------
 -- * Local regions
