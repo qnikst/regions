@@ -15,6 +15,7 @@
            , FlexibleContexts  -- for MonadBase
            , GADTs             -- for constraint on datatype
            , EmptyDataDecls    -- for V
+           , RecursiveDo       -- for newRVar
            #-}
 module Data.Region.RVal
   ( -- * Region values
@@ -32,8 +33,10 @@ import Control.Monad.Base (MonadBase, liftBase)
 -- from base
 import Control.Concurrent.MVar
 import Control.Exception (mask_)
+import Control.Monad (when)
 import Data.IORef
--- import System.Mem.Weak 
+import Data.Foldable
+import System.Mem.Weak 
 
 data V :: (* -> *)
 
@@ -43,17 +46,19 @@ class ReProtect (s :: (* -> *) -> *) where
   unsafeToRefCountedFinalizer :: s r -> RefCountedFinalizer
 
 data RVar (s :: (* -> *) -> *)  where
-  RVal :: (ReProtect s) => MVar (RefCountedFinalizer, s V) -> RVar s
+  RVal :: (ReProtect s) => MVar (RefCountedFinalizer, s V) -> Weak (RVar s) -> RVar s
 
 newRVar :: (MonadBase IO parent, region ~ RegionT st parent, ReProtect s)
         => region (RVar s)
-newRVar = liftBase $ do
-  m <- newEmptyMVar
-  return $ RVal m
+newRVar = liftBase $ mdo
+    m <- newEmptyMVar
+    r <- return $ RVal m w
+    w <- mkWeakPtr r (Just (cleanRVal m))
+    return r
 
 putRVar :: (MonadBase IO parent, region ~ RegionT st parent, ReProtect s)
         => RVar s -> s region -> region ()
-putRVar (RVal m) s = liftBase $ mask_ $ do
+putRVar (RVal m _) s = liftBase $ mask_ $ do
    let rf@(RefCountedFinalizer _ cnt)  = unsafeToRefCountedFinalizer s
    rf `seq` putMVar m (rf, unsafeChangeRegion s)
    atomicModifyIORef' cnt (\refCnt ->
@@ -62,10 +67,22 @@ putRVar (RVal m) s = liftBase $ mask_ $ do
 
 takeRVar :: (Dup s, MonadBase IO parent, RegionBaseControl IO region, region ~ RegionT st parent, ReProtect s)
          => RVar s -> region (s region)
-takeRVar (RVal m) = 
+takeRVar (RVal m _) = 
    runRegionT $ unsafeControl $ \runInIO -> mask_ $ do
      (RefCountedFinalizer _ cnt, s) <- takeMVar m
      atomicModifyIORef' cnt (\refCnt ->
        let refCnt' = refCnt - 1
        in (refCnt', ()))
      runInIO $ dup (unsafeChangeRegion s)
+
+cleanRVal :: MVar (RefCountedFinalizer, a) -> IO ()
+cleanRVal m = mask_ $ traverse_ (go . fst) =<< (tryTakeMVar m)
+  where
+    go (RefCountedFinalizer finalizer refCntIORef) = do
+      refCnt <- decrement refCntIORef
+      when (refCnt == 0) finalizer
+      where
+        decrement :: IORef Int -> IO Int
+        decrement ioRef = atomicModifyIORef' ioRef $ \refCnt ->
+                            let refCnt' = refCnt - 1
+                            in (refCnt', refCnt')
