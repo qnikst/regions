@@ -38,11 +38,13 @@ import Data.IORef
 import Data.Foldable
 import System.Mem.Weak 
 
+import Data.Coerce
+import Unsafe.Coerce
+
 data V :: (* -> *)
 
 -- | Values that can be moved to another region via RVal
 class ReProtect (s :: (* -> *) -> *) where
-  unsafeChangeRegion :: s st -> s gt 
   unsafeToRefCountedFinalizer :: s r -> RefCountedFinalizer
 
 data RVar (s :: (* -> *) -> *)  where
@@ -56,16 +58,21 @@ newRVar = liftBase $ mdo
     w <- mkWeakPtr r (Just (cleanRVal m))
     return r
 
-putRVar :: (MonadBase IO parent, region ~ RegionT st parent, ReProtect s)
+putRVar :: (MonadBase IO parent, region ~ RegionT st parent, ReProtect s, Coercible (s region) (s V))
         => RVar s -> s region -> region ()
 putRVar (RVal m _) s = liftBase $ mask_ $ do
    let rf@(RefCountedFinalizer _ cnt)  = unsafeToRefCountedFinalizer s
-   rf `seq` putMVar m (rf, unsafeChangeRegion s)
+   rf `seq` putMVar m (rf, coerce s)
    atomicModifyIORef' cnt (\refCnt ->
      let refCnt' = refCnt + 1
      in (refCnt', ()))
 
-takeRVar :: (Dup s, MonadBase IO parent, RegionBaseControl IO region, region ~ RegionT st parent, ReProtect s)
+takeRVar :: ( Dup s
+            , MonadBase IO parent
+	    , RegionBaseControl IO region
+	    , region ~ RegionT st parent
+	    , proxy ~ RegionT pt region
+	    )
          => RVar s -> region (s region)
 takeRVar (RVal m _) = 
    runRegionT $ unsafeControl $ \runInIO -> mask_ $ do
@@ -73,7 +80,7 @@ takeRVar (RVal m _) =
      atomicModifyIORef' cnt (\refCnt ->
        let refCnt' = refCnt - 1
        in (refCnt', ()))
-     runInIO $ dup (unsafeChangeRegion s)
+     runInIO $ dup (unsafeCoerce s)                         --- XXX: it's possible to use safe coerce here
 
 cleanRVal :: MVar (RefCountedFinalizer, a) -> IO ()
 cleanRVal m = mask_ $ traverse_ (go . fst) =<< (tryTakeMVar m)
